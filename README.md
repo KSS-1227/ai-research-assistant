@@ -3,6 +3,9 @@
 A production-grade, full-stack research synthesis platform. Upload academic documents, authenticate via Supabase, and receive citation-aware synthesis through a deterministic multi-agent RAG pipeline powered by Google Gemini — all through a guided, zero-friction 4-step UI.
 
 > Live demo: https://reasearchassistant.streamlit.app/
+> Backend: https://reasearchassistant.onrender.com
+>
+> If the backend has gone to sleep, restart it by visiting the backend link once. After it wakes up, the project will work normally through the Streamlit UI.
 
 ---
 
