@@ -7,6 +7,10 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 >
 > If the backend has gone to sleep, restart it by visiting the backend link once. After it wakes up, the project will work normally through the Streamlit UI.
 
+> Backend: https://reasearchassistant.onrender.com
+>
+> If the backend has gone to sleep, restart it by visiting the backend link once. After it wakes up, the project will work normally through the Streamlit UI.
+
 ---
 
 ## Overview
