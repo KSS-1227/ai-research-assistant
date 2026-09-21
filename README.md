@@ -54,9 +54,11 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 │                                                                 │
 │  POST   /upload              Create session, save temp files    │
 │  POST   /process             Chunk → embed → FAISS index        │
-│  POST   /ask                 Run 3-agent pipeline, save to DB   │
+│  POST   /ask                 Run 4-agent pipeline, save to DB   │
 │  GET    /suggested-questions FAISS search → question templates  │
 │  GET    /history             JWT-verified query history         │
+│  GET    /documents           List uploaded documents per session │
+│  DELETE /documents/{id}      Delete specific document           │
 │  GET    /health              Liveness check                     │
 │  GET    /status              Active sessions + system stats     │
 │  DELETE /reset               Destroy session + clean up files   │
@@ -68,14 +70,19 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 │  core/coordinator.py                                            │
 │                                                                 │
 │  Step 1 ── LiteratureScanner      0 LLM calls                  │
-│            Dynamic-k FAISS search, relevance re-ranking         │
+│            Dynamic-k FAISS search, 2-stage re-ranking           │
 │                                                                 │
 │  Step 2 ── CitationExtractor      0 LLM calls                  │
-│            Regex citations, key quotes, author/venue stats      │
+│            Regex citations, key quotes, citation network        │
+│            Author/venue/year statistics                         │
 │                                                                 │
 │  Step 3 ── SynthesisAgent         1 LLM call                   │
 │            [Paper N] citation index → Gemini prompt             │
 │            Deterministic fallback on API failure                │
+│                                                                 │
+│  Step 4 ── VerificationAgent      0 LLM calls                  │
+│            Citation validity check, embedding-based grounding   │
+│            Unsupported claims detection                         │
 └────────────────────┬────────────────────────────────────────────┘
                      │
          ┌───────────┴───────────┐
@@ -84,7 +91,7 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
   (LLM + Embeddings)        (Auth + queries table)
 ```
 
-**Design rule:** exactly **1 Gemini LLM call per user query**. Retrieval, citation extraction, and domain classification are fully deterministic.
+**Design rule:** exactly **1 Gemini LLM call per user query**. Retrieval, citation extraction, domain classification, and verification are fully deterministic.
 
 ---
 
@@ -105,7 +112,6 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 | Data validation | Pydantic v2 |
 | Environment config | `python-dotenv` |
 | Containerisation | Docker (Python 3.11-slim) |
-| Orchestration | Kubernetes |
 | CI/CD | GitHub Actions |
 | Testing | Pytest |
 
@@ -160,11 +166,6 @@ ReasearchAssistant/
 │   ├── AN IMAGE IS WORTH 16X16 WORDS.pdf
 │   └── ...                       # (10 additional papers)
 │
-├── k8s/
-│   ├── deployment.yaml           # 2-replica Deployment — resource limits,
-│   │                             # liveness + readiness probes on /health
-│   ├── api-service.yaml          # Kubernetes Service for FastAPI (:8000)
-│   └── service.yaml              # Kubernetes Service for Streamlit (:8501)
 │
 ├── tests/
 │   ├── __init__.py
@@ -303,8 +304,10 @@ All endpoints are documented interactively at `http://localhost:8000/docs`.
 | `GET` | `/status` | None | Active sessions, docs processed, uptime |
 | `POST` | `/upload` | None | Upload documents — creates session, returns `session_id` |
 | `POST` | `/process` | None | Chunk, embed, and build FAISS index |
-| `POST` | `/ask` | None | Run 3-agent pipeline, return structured synthesis |
+| `POST` | `/ask` | None | Run 4-agent pipeline, return structured synthesis |
 | `GET` | `/suggested-questions` | None | Generate questions from indexed documents |
+| `GET` | `/documents` | None | List all uploaded documents for current session |
+| `DELETE` | `/documents/{id}` | None | Delete specific document and update FAISS index |
 | `GET` | `/history` | Bearer JWT | Return last 20 queries for the authenticated user |
 | `DELETE` | `/reset` | None | Delete session and remove temp files |
 
@@ -339,6 +342,11 @@ All endpoints are documented interactively at `http://localhost:8000/docs`.
       "papers_analyzed": 5,
       "retrieval_confidence": 0.83,
       "estimated_cost": 0.0004
+    },
+    "verification": {
+      "citations_valid": true,
+      "grounding_score": 0.89,
+      "unsupported_claims": []
     }
   },
   "processing_time_seconds": 8.4
@@ -346,6 +354,241 @@ All endpoints are documented interactively at `http://localhost:8000/docs`.
 ```
 
 ---
+
+## Pipeline Deep Dive
+
+### Step 1: LiteratureScanner (Dynamic-k Retrieval + Re-ranking)
+
+**What it does:**
+- Intelligently selects how many documents (k) to retrieve from FAISS based on query complexity
+- Applies two-stage re-ranking to improve relevance
+
+**Dynamic-k Selection Algorithm:**
+```
+Query Length / Complexity → k value
+- Simple queries (< 20 words)     → k=3
+- Standard queries (20-50 words)  → k=5
+- Complex queries (> 50 words)    → k=8
+- Maximum papers to synthesis: 8
+```
+
+**Example:**
+- Query: "What is attention?" → k=3 (simple)
+- Query: "How do transformers compare to RNNs for NLP?" → k=5 (standard)
+- Query: "Compare sparse attention mechanisms across Longformer, Reformer, and Performer with performance metrics" → k=8 (complex)
+
+**Two-Stage Re-ranking Algorithm:**
+
+| Stage | Method | Weight | Description |
+|---|---|---|---|
+| **1. FAISS Similarity** | Vector cosine similarity | 0.7 | Raw embedding distance from semantic search |
+| **2. Keyword Overlap** | Regex keyword matching | 0.3 | Lexical relevance (exact phrase matches score higher) |
+
+**Combined Re-ranking Score:**
+```
+combined_score = (0.7 × faiss_similarity) + (0.3 × keyword_overlap)
+```
+
+Papers are then sorted by combined_score in descending order.
+
+**Output:**
+- Ranked list of Paper objects with relevance scores
+- Effective k value used (actual documents retrieved)
+- Retrieved chunks with metadata (page, section, heading)
+
+---
+
+### Step 2: CitationExtractor (Metadata Enrichment)
+
+**What it does:**
+- Extracts structured metadata from retrieved papers
+- Builds citation network graph
+- Mines key quotes and statistics
+- Zero LLM calls — purely deterministic regex
+
+**Features:**
+
+| Feature | Method | Output |
+|---|---|---|
+| **Citation Extraction** | Regex patterns (IEEE, APA, MLA) | `citations_extracted`: count, list |
+| **Key Quotes** | Relevance matching | `key_quotes`: top 10 passages |
+| **Author Network** | Citation graph building | `top_authors`: names + citation count |
+| **Venue Distribution** | Paper metadata parsing | `venues`: unique conferences/journals |
+| **Publication Timeline** | Year extraction | `year_span`: min-max range |
+| **Research Insights** | Keyword frequency analysis | `research_insights`: domain themes |
+
+**Example Output:**
+```json
+{
+  "citations_extracted": 247,
+  "top_authors": [
+    { "name": "Vaswani et al.", "citations": 45 },
+    { "name": "Devlin et al.", "citations": 38 }
+  ],
+  "venues": ["NeurIPS", "ICML", "ACL"],
+  "year_span": "2017-2024",
+  "research_insights": [
+    "attention mechanisms (89 mentions)",
+    "transformer architecture (76 mentions)",
+    "neural machine translation (54 mentions)"
+  ]
+}
+```
+
+---
+
+### Step 3: SynthesisAgent (Citation-Aware LLM Synthesis)
+
+**What it does:**
+- Uses the extracted papers + citations as context
+- Builds a [Paper N] citation index
+- Constructs a deterministic prompt with SOURCE INDEX block
+- Makes exactly 1 Gemini LLM call
+- Falls back to deterministic extraction if LLM fails
+
+**Citation Indexing:**
+```
+[Paper 1] → "Attention Is All You Need (Vaswani et al., 2017)"
+[Paper 2] → "Longformer: The Long-Document Transformer (Beltagy et al., 2020)"
+[Paper 3] → "REFORMER: THE EFFICIENT TRANSFORMER (Kitaev et al., 2020)"
+```
+
+When the LLM writes findings, it uses citations like:
+```
+"Transformers revolutionized NLP by replacing recurrence [Paper 1]. 
+Long documents are handled efficiently via Longformer [Paper 2] 
+and Reformer [Paper 3]."
+```
+
+The UI then extracts the [Paper N] labels and matches them to source metadata.
+
+**Deterministic Fallback (Synthesis Reliability):**
+- If Gemini API fails or returns invalid JSON
+- System automatically extracts key sentences from papers
+- Preserves citation structure with [Paper N] labels
+- Returns result with `fallback_used: true` flag
+
+---
+
+### Step 4: VerificationAgent (Citation Validity & Grounding)
+
+**What it does:**
+- Validates that each [Paper N] citation actually exists in the source list
+- Computes embedding-based grounding scores
+- Detects unsupported claims (findings not backed by papers)
+- Zero LLM calls — embedding-only verification
+
+**Verification Checks:**
+
+| Check | Method | Returns |
+|---|---|---|
+| **Citation Validity** | Direct lookup in [Paper N] index | `citations_valid: boolean` |
+| **Grounding Score** | Embedding similarity between finding + paper abstract | `grounding_score: 0-1` |
+| **Unsupported Claims** | Findings with grounding_score < threshold | `unsupported_claims: []` |
+
+**Grounding Threshold:** 0.6 (configurable in `config/settings.py`)
+
+**Example Output:**
+```json
+{
+  "citations_valid": true,
+  "grounding_score": 0.89,
+  "unsupported_claims": [],
+  "verification_details": {
+    "finding_1": { "grounded": true, "score": 0.92 },
+    "finding_2": { "grounded": true, "score": 0.87 },
+    "finding_3": { "grounded": false, "score": 0.45 }
+  }
+}
+```
+
+---
+
+## Cost Calculation Methodology
+
+All costs are computed **in real-time** using the actual token counts from the Google Gemini API response.
+
+### How It Works
+
+**For each LLM call:**
+
+1. **API Response Metadata** — Gemini returns:
+   ```json
+   {
+     "usage": {
+       "prompt_tokens": 2450,
+       "candidates_tokens": 1820
+     }
+   }
+   ```
+
+2. **Token Counting** — From `core/llm_interface.py`:
+   ```python
+   total_tokens = prompt_tokens + response_tokens
+   ```
+
+3. **Pricing Lookup** — From `config/settings.py`:
+   ```python
+   GEMINI_2_5_FLASH_PRICING = {
+       "input": 0.075 / 1_000_000,   # $0.075 per 1M input tokens
+       "output": 0.30 / 1_000_000    # $0.30 per 1M output tokens
+   }
+   ```
+
+4. **Cost Calculation**:
+   ```
+   input_cost = prompt_tokens × $0.075 / 1_000_000
+   output_cost = response_tokens × $0.30 / 1_000_000
+   total_cost = input_cost + output_cost
+   ```
+
+### Example Breakdown
+
+Query: "Explain transformer attention mechanisms"
+
+| Component | Tokens | Rate | Cost |
+|---|---|---|---|
+| Prompt tokens | 2,450 | $0.075 / 1M | $0.000184 |
+| Response tokens | 1,820 | $0.30 / 1M | $0.000546 |
+| **Total** | **4,270** | — | **$0.000730** |
+
+**Notes:**
+- Embeddings (Google `text-embedding-004`) are **free** in this system (included in Gemini API quota)
+- Cost is estimated for display purposes — actual billing depends on Google's invoice
+- `total_cost` accumulates across the entire session
+- Shown in response as `estimated_cost` field
+
+---
+
+## Citation Network & Knowledge Graph
+
+The CitationExtractor builds a lightweight citation network showing how papers reference each other.
+
+### Network Structure
+
+```json
+{
+  "citation_network": {
+    "Paper 1 (Vaswani et al., 2017)": [
+      "Paper 3 (Devlin et al., 2018)",
+      "Paper 5 (Radford et al., 2019)"
+    ],
+    "Paper 2 (Beltagy et al., 2020)": [
+      "Paper 1 (Vaswani et al., 2017)",
+      "Paper 4 (Liu et al., 2019)"
+    ]
+  }
+}
+```
+
+### Use Cases
+
+- **Understand the research trajectory** — see which papers cite which
+- **Identify foundational works** — papers cited by many others
+- **Trace idea evolution** — from original paper to modern applications
+- **Build context** — understand the research landscape around your query
+
+
 
 ## Environment Variables
 
@@ -403,37 +646,6 @@ docker run -d \
 ```
 
 `entrypoint.sh` starts FastAPI first, waits for `/health` to return 200, then starts Streamlit. Both services run in the same container. If either process exits, the container shuts down cleanly.
-
----
-
-## Kubernetes
-
-### Create Secret
-
-```bash
-kubectl create secret generic research-assistant-secrets \
-  --from-literal=GEMINI_API_KEY=<your-key> \
-  --from-literal=SUPABASE_URL=<your-url> \
-  --from-literal=SUPABASE_SERVICE_KEY=<your-service-key>
-```
-
-### Deploy
-
-```bash
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/api-service.yaml
-kubectl apply -f k8s/service.yaml
-```
-
-### Verify
-
-```bash
-kubectl get pods
-kubectl get services
-kubectl describe deployment research-assistant
-```
-
-The deployment runs 2 replicas. Liveness and readiness probes hit `GET /health` on port 8000. Resource limits: 512Mi–1Gi memory, 250m–1000m CPU.
 
 ---
 
