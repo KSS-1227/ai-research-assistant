@@ -41,7 +41,7 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 │       ├── Step 1 — Upload                                       │
 │       ├── Step 2 — Process                                      │
 │       ├── Step 3 — Ask  (Custom + Suggested Questions)          │
-│       └── Step 4 — History (JWT → Bearer token → /history)     │
+│       └── Step 4 — History (JWT → Bearer token → /history)      │
 └────────────────────┬────────────────────────────────────────────┘
                      │ HTTP  (requests library)
                      ▼
@@ -57,7 +57,7 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 │  POST   /ask                 Run 4-agent pipeline, save to DB   │
 │  GET    /suggested-questions FAISS search → question templates  │
 │  GET    /history             JWT-verified query history         │
-│  GET    /documents           List uploaded documents per session │
+│  GET    /documents           List uploaded documents per session│
 │  DELETE /documents/{id}      Delete specific document           │
 │  GET    /health              Liveness check                     │
 │  GET    /status              Active sessions + system stats     │
@@ -69,18 +69,18 @@ A production-grade, full-stack research synthesis platform. Upload academic docu
 │                   ResearchCoordinator                           │
 │  core/coordinator.py                                            │
 │                                                                 │
-│  Step 1 ── LiteratureScanner      0 LLM calls                  │
+│  Step 1 ── LiteratureScanner      0 LLM calls                   │
 │            Dynamic-k FAISS search, 2-stage re-ranking           │
 │                                                                 │
-│  Step 2 ── CitationExtractor      0 LLM calls                  │
+│  Step 2 ── CitationExtractor      0 LLM calls                   │
 │            Regex citations, key quotes, citation network        │
 │            Author/venue/year statistics                         │
 │                                                                 │
-│  Step 3 ── SynthesisAgent         1 LLM call                   │
+│  Step 3 ── SynthesisAgent         1 LLM call                    │
 │            [Paper N] citation index → Gemini prompt             │
 │            Deterministic fallback on API failure                │
 │                                                                 │
-│  Step 4 ── VerificationAgent      0 LLM calls                  │
+│  Step 4 ── VerificationAgent      0 LLM calls                   │
 │            Citation validity check, embedding-based grounding   │
 │            Unsupported claims detection                         │
 └────────────────────┬────────────────────────────────────────────┘
