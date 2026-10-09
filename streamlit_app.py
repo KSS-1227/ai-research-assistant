@@ -17,6 +17,14 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+st.set_page_config(
+    page_title="Research Assistant AI",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 from streamlit_cookies_manager import EncryptedCookieManager
 
 # ── Cookie Manager ────────────────────────────────────────────────────────
@@ -34,13 +42,6 @@ API_TIMEOUT = 300
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
-
-st.set_page_config(
-    page_title="Research Assistant AI",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 st.markdown("""
 <style>
