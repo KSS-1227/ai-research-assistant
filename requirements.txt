@@ -12,7 +12,7 @@ google-genai>=1.68.0
 pydantic>=2.7.1
 
 # --- Web UI ---
-streamlit>=1.35.0
+streamlit==1.35.0
 
 # --- FastAPI Backend ---
 fastapi>=0.104.0
