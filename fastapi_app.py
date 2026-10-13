@@ -15,6 +15,8 @@ import re
 import os
 import logging
 import uuid
+import secrets
+import html
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -165,6 +167,11 @@ class DocumentListResponse(BaseModel):
     documents: List[DocumentInfo]
 
 
+# ── Security Constants ────────────────────────────────────────────────────
+
+MAX_FILES_PER_UPLOAD = 10
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8501,https://reasearchassistant.streamlit.app").split(",")
+
 # ── Guardrails ────────────────────────────────────────────────────────────
 
 PROMPT_INJECTION_PATTERNS = [
@@ -240,7 +247,8 @@ class SessionManager:
         if len(self.sessions) >= self.max_sessions:
             self._cleanup_expired_sessions()
 
-        session_id = str(uuid.uuid4())[:8]
+        # Task 4: Use secrets.token_urlsafe(16) for strong session IDs
+        session_id = secrets.token_urlsafe(16)
         session = SessionState(session_id, self.api_key)
         self.sessions[session_id] = session
         self.stats["total_sessions_created"] += 1
@@ -318,10 +326,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -329,6 +337,34 @@ def get_session_manager() -> SessionManager:
     if session_manager is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     return session_manager
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal. Returns safe name or raises HTTPException."""
+    if not filename:
+        raise HTTPException(status_code=400, detail="Filename cannot be empty")
+    
+    # Strip backslashes and get just the filename component
+    safe_name = Path(filename.replace("\\", "/")).name
+    
+    # Reject . and ..
+    if safe_name in (".", "..") or not safe_name:
+        raise HTTPException(status_code=400, detail=f"Invalid filename: {filename}")
+    
+    return safe_name
+
+
+def _assert_path_inside_dir(file_path: str, parent_dir: str) -> None:
+    """Assert that file_path resolves inside parent_dir. Raises HTTPException if not."""
+    try:
+        resolved_file = Path(file_path).resolve()
+        resolved_parent = Path(parent_dir).resolve()
+        resolved_file.relative_to(resolved_parent)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal detected: file path escapes session directory"
+        )
 
 
 async def get_current_user(
@@ -424,6 +460,24 @@ async def upload_documents(
     """Upload research documents. Creates a new session."""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
+    
+    # Task 5: Reject early if too many files
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {MAX_FILES_PER_UPLOAD} files per upload."
+        )
+
+    allowed_extensions = {".pdf", ".txt", ".md"}
+    for file in files:
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in allowed_extensions:
+            continue
+        if hasattr(file, "size") and file.size and file.size > 50 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {file.filename} exceeds 50 MB limit"
+            )
 
     session = sm.create_session()
     session.temp_dir = tempfile.mkdtemp(prefix=f"research_{session.session_id}_")
@@ -431,7 +485,7 @@ async def upload_documents(
     supported_files = []
     unsupported_files = []
     total_size_mb = 0.0
-    allowed_extensions = {".pdf", ".txt", ".md"}
+    seen_names = set()
 
     try:
         for file in files:
@@ -441,24 +495,52 @@ async def upload_documents(
                 unsupported_files.append(file.filename)
                 continue
 
-            contents = await file.read()
+            try:
+                safe_name = _sanitize_filename(file.filename)
+            except HTTPException:
+                unsupported_files.append(f"{file.filename} (invalid name)")
+                continue
+            
+            if safe_name in seen_names:
+                prefix = secrets.token_hex(4)
+                safe_name = f"{prefix}_{safe_name}"
+            seen_names.add(safe_name)
+
+            contents = b""
+            chunk_size = 1024 * 1024
+            bytes_read = 0
+            max_bytes = 50 * 1024 * 1024
+            
+            try:
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    bytes_read += len(chunk)
+                    if bytes_read > max_bytes:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"File {file.filename} exceeds 50 MB limit"
+                        )
+                    contents += chunk
+            except HTTPException:
+                raise
+            
             size_mb = len(contents) / (1024 * 1024)
 
-            if size_mb > 50:
-                unsupported_files.append(f"{file.filename} (too large: {size_mb:.1f}MB)")
-                continue
-
-            file_path = os.path.join(session.temp_dir, file.filename)
+            file_path = os.path.join(session.temp_dir, safe_name)
+            _assert_path_inside_dir(file_path, session.temp_dir)
+            
             with open(file_path, "wb") as f:
                 f.write(contents)
 
-            supported_files.append(file.filename)
+            supported_files.append(safe_name)
             total_size_mb += size_mb
             session.documents_uploaded += 1
-            doc_id = str(uuid.uuid4())[:8]
+            doc_id = secrets.token_hex(4)
             session.uploaded_files[doc_id] = DocumentInfo(
                 document_id=doc_id,
-                filename=file.filename,
+                filename=safe_name,
                 uploaded_at=datetime.now().isoformat(),
                 size_kb=round(size_mb * 1024, 2),
             )

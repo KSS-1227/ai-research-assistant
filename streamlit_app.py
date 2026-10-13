@@ -8,6 +8,7 @@ import streamlit as st
 import requests
 import json
 import os
+import html
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,10 +29,19 @@ st.set_page_config(
 from streamlit_cookies_manager import EncryptedCookieManager
 
 # ── Cookie Manager ────────────────────────────────────────────────────────
-# Must be initialised before set_page_config and any st calls
+# Task 3: Require COOKIE_SECRET to be set; fail with clear message if missing
+COOKIE_SECRET = os.getenv("COOKIE_SECRET")
+if not COOKIE_SECRET:
+    st.error(
+        "❌ COOKIE_SECRET environment variable is not set. "
+        "Please set it before running the app. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+    )
+    st.stop()
+
 cookies = EncryptedCookieManager(
     prefix="research_assistant_",
-    password=os.getenv("COOKIE_SECRET", "research-assistant-cookie-secret-key")
+    password=COOKIE_SECRET
 )
 if not cookies.ready():
     st.stop()
@@ -829,9 +839,10 @@ def render_answer(result: Dict[str, Any], key_suffix: str = ""):
         badge_color = {"local": "🟢", "web": "🔵", "both": "🟣", "declined": "🔴"}
         st.caption(f"{badge_color.get(source, '⚪')} Source: **{source.upper()}** — answered using {source} context")
 
-        # Fused answer in a softer card layout
+        # Task 2: Escape HTML in fused_answer before rendering
+        escaped_answer = html.escape(raw['fused_answer']).replace('\n', '<br/>')
         st.markdown(
-            f"<div class='answer-card'>{raw['fused_answer'].replace('\n', '<br/>')}</div>",
+            f"<div class='answer-card'>{escaped_answer}</div>",
             unsafe_allow_html=True,
         )
 

@@ -61,3 +61,6 @@ faiss_index/
 logs/
 *.jsonl
 data/
+.venv312/
+.venv/
+DETAILED_DIFFS.md

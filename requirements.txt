@@ -52,3 +52,4 @@ logfire[fastapi,httpx]>=3.0.0
 # Rank-BM25 package (tokeniser & BM25 implementation)
 rank-bm25>=0.2.1
 numpy
+setuptools<81
