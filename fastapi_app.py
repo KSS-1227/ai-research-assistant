@@ -10,7 +10,6 @@ Endpoints:
   GET    /status                - System statistics and session info
   DELETE /reset                 - Clear session and vector index  DELETE /reset                 - Clear session and vector index
 """
-import logfire
 import re
 import os
 import logging
@@ -27,6 +26,13 @@ import tempfile
 from core.coordinator import ResearchCoordinator
 from agents.orchestrator import smart_rag_answer
 from contextlib import asynccontextmanager
+
+# Optional logfire import — only used if LOGFIRE_TOKEN is set
+try:
+    import logfire
+    _logfire_available = True
+except ImportError:
+    _logfire_available = False
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks, Security, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,8 +73,8 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Logfire observability — optional, only if token is set
-if os.getenv("LOGFIRE_TOKEN"):
+# Logfire observability — optional, only if token is set AND logfire is installed
+if _logfire_available and os.getenv("LOGFIRE_TOKEN"):
     logfire.configure(
         service_name="research-assistant-api",
         service_version="1.0.0",
@@ -315,7 +321,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-if os.getenv("LOGFIRE_TOKEN"):
+if _logfire_available and os.getenv("LOGFIRE_TOKEN"):
     logfire.instrument_fastapi(app)
     logfire.instrument_httpx()
 
@@ -680,7 +686,8 @@ async def ask_question(
     # Scrub token from logs
     safe_req = req.dict()
     safe_req["user_token"] = "[REDACTED]"
-    logfire.info("ask_request", **safe_req)
+    if _logfire_available:
+        logfire.info("ask_request", **safe_req)
 
     session = sm.get_session(req.session_id)
 

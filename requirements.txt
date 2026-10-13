@@ -48,8 +48,6 @@ supabase>=2.0.0
 
 slowapi>=0.1.9
 streamlit-cookies-manager>=0.2.0
-# Logfire for observability with FastAPI instrumentation
-logfire[fastapi,httpx]==3.4.0
 # Rank-BM25 package (tokeniser & BM25 implementation)
 rank-bm25>=0.2.1
 numpy>=1.26.4,<2.0.0

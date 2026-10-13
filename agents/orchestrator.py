@@ -23,14 +23,21 @@ existing search_documents() (which already returns 'similarity_score')
 and coordinator.research_query() for final synthesis.
 """
 
-import logfire
 import os
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from contextlib import nullcontext
 
 import requests
+
+# Optional logfire import
+try:
+    import logfire
+    _logfire_available = True
+except ImportError:
+    _logfire_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -289,61 +296,75 @@ def smart_rag_answer(
     has_documents: bool = True,
     local_threshold: float = LOCAL_CONFIDENCE_THRESHOLD,
 ) -> SmartRagResult:
-    with logfire.span("smart_rag_answer", question=question, has_documents=has_documents):
-
-        with logfire.span("retrieve_local"):
+    span_context = logfire.span("smart_rag_answer", question=question, has_documents=has_documents) if _logfire_available else nullcontext()
+    
+    with span_context:
+        retrieve_span = logfire.span("retrieve_local") if _logfire_available else nullcontext()
+        with retrieve_span:
             local = retrieve_local(coordinator, question)
-        logfire.info("local_retrieval", chunks=len(local.chunks), best_score=round(local.best_score, 4))
+        
+        if _logfire_available:
+            logfire.info("local_retrieval", chunks=len(local.chunks), best_score=round(local.best_score, 4))
 
         if local.has_results and local.best_score >= local_threshold:
-            logfire.info("routing", decision="local_only")
-            with logfire.span("research_query"):
+            if _logfire_available:
+                logfire.info("routing", decision="local_only")
+            research_span = logfire.span("research_query") if _logfire_available else nullcontext()
+            with research_span:
                 synthesis = coordinator.research_query(question)
             synthesis["source_attribution"] = "local"
             return SmartRagResult(answer_source="local", declined=False,
                 decline_reason=None, local=local, web=WebRetrieval(), synthesis=synthesis)
 
         if local.best_score < WEB_SEARCH_MIN_THRESHOLD:
-            logfire.info("routing", decision="hard_declined", best_score=round(local.best_score, 4))
+            if _logfire_available:
+                logfire.info("routing", decision="hard_declined", best_score=round(local.best_score, 4))
             return SmartRagResult(answer_source="declined", declined=True,
                 decline_reason="Query has no relevance to the uploaded documents.",
                 local=local, web=WebRetrieval(), synthesis=None)
 
         document_topic = "unknown topic"
         if getattr(coordinator, "document_processor", None) is not None:
-            document_topic = getattr(coordinator.document_processor, "document_topic", "unknown topic")
-        document_topic = (
-            coordinator.document_processor.get_document_topic()
-            if getattr(coordinator, "document_processor", None) is not None
-            else "unknown topic"
-        )
-        with logfire.span("check_scope"):
+            document_topic = coordinator.document_processor.get_document_topic()
+        
+        scope_span = logfire.span("check_scope") if _logfire_available else nullcontext()
+        with scope_span:
             scope = check_scope(llm_call_fn, question, has_documents, local.best_score, document_topic)
-        logfire.info("scope_check", in_scope=scope.in_scope, reasoning=scope.reasoning)
+        
+        if _logfire_available:
+            logfire.info("scope_check", in_scope=scope.in_scope, reasoning=scope.reasoning)
 
         if not scope.in_scope:
-            logfire.info("routing", decision="declined")
+            if _logfire_available:
+                logfire.info("routing", decision="declined")
             return SmartRagResult(answer_source="declined", declined=True,
                 decline_reason=scope.reasoning, local=local, web=WebRetrieval(), synthesis=None)
 
-        with logfire.span("retrieve_web"):
+        web_span = logfire.span("retrieve_web") if _logfire_available else nullcontext()
+        with web_span:
             web = retrieve_web(question)
-        logfire.info("web_retrieval", sources=len(web.sources))
+        
+        if _logfire_available:
+            logfire.info("web_retrieval", sources=len(web.sources))
 
         if not local.has_results and not web.has_results:
             return SmartRagResult(answer_source="declined", declined=True,
                 decline_reason="No relevant information found.", local=local, web=web, synthesis=None)
 
-        with logfire.span("research_query"):
+        research_span2 = logfire.span("research_query") if _logfire_available else nullcontext()
+        with research_span2:
             synthesis = coordinator.research_query(question)
 
         if web.context and isinstance(synthesis, dict):
             local_findings = synthesis.get("key_findings", [])
-            with logfire.span("fuse_local_and_web"):
+            fusion_span = logfire.span("fuse_local_and_web") if _logfire_available else nullcontext()
+            with fusion_span:
                 fused_answer = fuse_local_and_web(llm_call_fn, question, local_findings, web)
+            
             if fused_answer:
                 synthesis["fused_answer"] = fused_answer
-                logfire.info("fusion", answer_length=len(fused_answer))
+                if _logfire_available:
+                    logfire.info("fusion", answer_length=len(fused_answer))
             synthesis["web_findings"] = [
                 f"{s['title']}: {s['snippet'][:200]}" for s in web.sources
             ]
@@ -353,7 +374,8 @@ def smart_rag_answer(
         )
         synthesis["source_attribution"] = source
         synthesis["web_sources"] = web.sources
-        logfire.info("smart_rag_complete", source=source)
+        if _logfire_available:
+            logfire.info("smart_rag_complete", source=source)
 
         return SmartRagResult(answer_source=source, declined=False,
             decline_reason=None, local=local, web=web, synthesis=synthesis)
