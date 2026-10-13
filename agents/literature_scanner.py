@@ -163,6 +163,19 @@ def rerank_chunks(
         reranked[0]["combined_score"]  if reranked else 0,
         reranked[-1]["combined_score"] if reranked else 0,
     )
+    
+    logger.debug("RETRIEVAL SCORING DETAILS (Query: '%s')", query)
+    for i, chunk in enumerate(reranked[:5], 1):
+        content_preview = chunk.get("content", "")[:80].replace('\n', ' ')
+        logger.debug(
+            "Rank %d: combined=%.4f (sim=%.4f, kw=%.4f) | %s...",
+            i,
+            chunk["combined_score"],
+            chunk["similarity_score"],
+            chunk["keyword_overlap"],
+            content_preview
+        )
+    
     return reranked[:top_n]
 
 

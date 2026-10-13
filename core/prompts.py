@@ -32,10 +32,14 @@ CRITICAL RULES:
    sources using [Paper 1], [Paper 2], etc. notation. Every key finding, methodology
    insight, and technical contribution MUST end with at least one [Paper N] citation.
    Do NOT invent citation labels — only use the numbers listed in the SOURCE INDEX.
+7. COMPLETENESS CHECK — if the user's question specifies a count (e.g., "4 types", "3 reasons"),
+   verify you found that many distinct, named items in the retrieved context. If you only found
+   some of them, explicitly state: "I found X of the Y requested items" before providing your answer.
 
 You MUST return a valid JSON object with EXACTLY these fields (no extra fields):
 {
     "research_question": "restate the exact question asked",
+    "completeness_note": "If question specifies a count, note how many items were found vs requested",
     "key_findings": [
         "Direct answer to the question from the document [Paper 1]",
         "Supporting evidence or detail from the document [Paper 2]",

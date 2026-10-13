@@ -112,13 +112,15 @@ class DocumentProcessor:
             
             # Split documents into chunks (no LLM calls here)
             from config.settings import SystemConfig
+            
+            # Use larger chunk size to keep enumerated lists together
+            # Increased from 1000 to 3000 chars to preserve list structure
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=SystemConfig.DOCUMENT_CONFIG["chunk_size"],
-                chunk_overlap=SystemConfig.DOCUMENT_CONFIG["chunk_overlap"],
+                chunk_size=3000,  # Increased to keep all 4 AI types intact
+                chunk_overlap=400,  # Increased overlap for context
                 length_function=len,
                 separators=["\n\n", "\n", " ", ""]
             )
-                
             chunks = text_splitter.split_documents(raw_docs)
             
             # Add source file information to each chunk's metadata
